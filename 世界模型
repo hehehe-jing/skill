@@ -1,0 +1,313 @@
+全部技能
+我安装的
+世界模型1
+去试试
+
+
+星核天启公式参数搜索优化 Agent（World Model V3.0）——在给定回测预算内自动寻找最优参数组合。当用户要求"调公式参数""跑回测优化""参数搜索""世界模型""换电脑重跑星核流程"时使用。含完整可运行代码模板，公式不写死，换公式只换一份 JSON。
+
+
+
+name
+世界模型1
+description
+星核天启公式参数搜索优化 Agent（World Model V3.0）——在给定回测预算内自动寻找最优参数组合。当用户要求"调公式参数""跑回测优化""参数搜索""世界模型""换电脑重跑星核流程"时使用。含完整可运行代码模板，公式不写死，换公式只换一份 JSON。
+agent_created
+true
+世界模型1 · World-Model V3.0
+星核天启量化平台的公式参数搜索优化 Agent。给一个公式名 + 回测预算，它自己在参数空间里找最优组合。
+
+一句话原理：每跑一次回测就更新一张"参数空间地图"，下一组参数按"实验价值"挑，而不是按网格或随机。
+
+已验证战绩（公式 6661，2026-09-04）：人工基线 R=+3.63% → 自动搜到 R=+30.86%，1526 次预算全部跑满。
+
+它能做什么 / 不能做什么
+能做	不能做
+自动发现平台上的公式与因子	不能凭空造因子（只能用平台上已有的）
+在给定预算内搜参数	不能改回测窗口内的历史数据
+自动识别"参数平台区"，避免白跑	不能保证全局最优（这是启发式搜索）
+月度切片验证稳定性	不预测未来行情
+快速开始（有经验者）
+bash
+# 1. 建工作区、放入模板代码
+mkdir -p D:/xinghe_runs/<公式名>_<日期> && cd $_
+cp ~/.workbuddy/skills/world-model-1/scripts/*.py .
+
+# 2. 生成公式配置（唯一配置源）
+python discover_formula.py --name <公式名>
+
+# 3. 跑批（后台）
+BUDGET=1000 python pipe_v3.py > run.log 2>&1
+
+# 4. 看板（另一个终端）
+python monitor_v3.py 8900      # 浏览器打开 http://127.0.0.1:8900
+
+# 5. 出报告
+python report_v3.py
+换一台电脑：前置条件清单
+按顺序检查，任何一项不满足后面全白搭。
+
+1. Python 环境
+bash
+# 必须有 fastmcp（连 MCP）、sklearn（代理模型）、openpyxl（报告）
+pip install fastmcp scikit-learn numpy scipy openpyxl
+
+# 验证
+python -c "import fastmcp, sklearn, numpy, scipy, openpyxl, sqlite3; print('OK')"
+Windows 上推荐用 conda 独立环境，避免污染系统 Python。记下解释器绝对路径，后面所有命令都用它。
+
+2. MCP server（星核回测的唯一入口）
+星核的回测只能走本地 MCP server（默认 http://127.0.0.1:8000/mcp）。
+
+bash
+netstat -ano | grep ":8000" | grep LISTEN     # 有输出 = 活着
+没监听 = server 死了。机器重启后它不会自启，这是最常见的"开工第一步就卡住"。
+启动方式取决于你的 server 安装位置：
+
+bash
+cd <mcp_server 目录> && python -u mcp_server.py > server.log 2>&1
+# 等 ~10 秒，日志出现 "Uvicorn running" 且端口开始 LISTEN 才算好
+排查顺序铁律：先看端口，再谈别的。不要一上来就怀疑 token、平台、网络。
+
+测试版 server（mcp_server_v2.exe）—— 三个不能踩的坑
+测试版是打包好的 exe，同样是 HTTP、同样占 8000，所以换版本前必须先腾空 8000
+（它不认命令行参数，也不认 FASTMCP_PORT / FASTMCP_HOST 环境变量）。
+
+bash
+export WM_MCP_V2=1                                   # 打开 v2 适配
+export WM_MCP_TOKEN=2200956d66174b75a1c39033ae66c4a6 # v2 必填
+坑	现象	真因 / 解法
+不带 Authorization	所有请求 -32602 Invalid request parameters	服务端真因是 NoneType.replace。必须带 Bearer <token>
+token 用错（生产/管理员）	不报错，静默返回空，公式列表空、get_user_backtest_config 报 NoneType not subscriptable	必须用该环境自己的 token。日志会打 token: xxxx，可对照
+端口被 v1 占着	Errno 10048 ... 只允许使用一次	先停掉 v1 再起 v2
+v2 相对 v1 的接口差异（适配层已封装在 pipe_common.py，业务代码不用管）：
+
+formular_config 没有 config_id，config 从 groupParams 字符串改成 {因子名: [lo,hi]}
+（按 formulaName 匹配；v2 的 item 里没有 name 字段，只有 formulaName）。
+back_test 删掉了 start_date / end_date，多传直接 pydantic 报错
+→ 窗口由平台里存的默认区间决定，不能逐月重跑。
+minimumInitialCapital 从 statistic 挪到顶层 mini_capital。
+新增 backtest_shares_page（明细分页，无月度字段）、daily_capital（按日资金曲线
++ 官方月度统计）、mini_capital、session_id；删了 delete_formular。
+✅ 月度统计：平台自带，别自己按日聚合
+back_test 一次返回里就有 daily_capital.monthlyRows（逐月）和 monthlySummary（汇总），
+不用单独调接口，也不用按日聚合。适配层函数：pipe_common.monthly_official() /
+monthly_from_backtest()（优先官方，没有才 fallback）。
+
+daily_capital.monthlyRows[0] = {
+  month, monthlyProfitAmount,        # 当月盈亏 = sold + holding
+  soldProfitAmount,                  # 当月已实现（增量）
+  holdingProfitAmount,               # ⚠️ 当月浮盈变动，已是增量，不是快照
+  monthlyMinimumCapital,
+  monthlyPrincipalReturnRate,        # 百分数，-17.38 = -17.38%
+  cumulativeProfitAmount,
+  totalAssets, availableCapital, buyAmount, sellReturnAmount,
+  warningStockCount, boughtStockCount, unboughtStockCount }
+自检过三次全等：Σ monthlyProfitAmount == monthlySummary.cumulativeProfitAmount；
+每行 monthlyProfitAmount == sold + holding；monthlyPrincipalReturnRate == profit/minCapital×100。
+
+🔴 两套口径的 holdingProfitAmount 含义相反：
+daily_capital.rows[] 里是当日快照（跨月要差分），monthlyRows[] 里是当月增量（直接加）。
+
+更要命的是按日聚合的结果跟官方差很多：同一回测逐月差 33 万 ~ 873 万，
+2026-02 官方 -145 万 / 日聚合 +377 万（正负号都反）。原因是持仓卖出时日快照浮盈归零，
+telescoping 假设不成立。判「连续负月」必须用官方 monthlyRows。
+
+monthlySummary.monthlyMinimumCapital == mini_capital.minimumInitialCapital（全窗口最小本金）。
+
+3. 星核客户端与本地代理
+回测请求实际由星核客户端的本地代理转发，默认 127.0.0.1:7075。客户端必须登录着。
+
+bash
+netstat -ano | grep ":7075" | grep LISTEN
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:7075/    # 404 也算活着（根路径没定义）
+4. 磁盘与网络
+工作区放数据盘。SQLite 库跑满 1500 次约几十 MB，但日志和中间 CSV 会涨。
+系统盘剩余 < 2GB 时，长任务写文件会失败。开工前先确认磁盘余量。
+若走 HTTP 代理，注意：Node 的 fetch 不认 HTTP_PROXY 环境变量，Python 的 requests 认。
+完整流程（逐步）
+Step 1 · 环境自检
+bash
+netstat -ano | grep -E ":8000|:7075" | grep LISTEN
+python -c "import fastmcp, sklearn, openpyxl; print('deps OK')"
+缺哪个补哪个，不要跳过。这一步省下的时间，比后面任何优化都多。
+
+Step 2 · 生成公式配置（最关键，决定成败）
+bash
+python discover_formula.py --name 6661
+python discover_formula.py --name 6661 --bounds      # 想手动确认每个因子范围时用
+它会经 MCP 拉取平台上的公式：fid（公式 id）、cid（配置项 id）、全部区间型因子的 fcid、名称、平台默认上下界，自动生成 formula_factors.json。
+
+这个文件是整个系统唯一的配置源，长这样：
+
+json
+{
+  "fid": 7057,
+  "cid": 886,
+  "name": "6661",
+  "factors": [
+    {"fcid": 10,  "name": "分钟涨跌幅", "def_lo": -3, "def_hi": 8, "is_int": false},
+    {"fcid": 214, "name": "5分钟内起爆次数", "def_lo": 1, "def_hi": 5, "is_int": true}
+  ],
+  "user_bounds": {"10": [-3, 8], "214": [1, 5]},
+  "step_grid":   {"10": 0.5,     "214": 1},
+  "target": {"sig_min": 150, "sig_max": 1000, "pr_floor": 0.0, "objective": "maximize_pr"}
+}
+三个字段要你拍板：
+
+字段	含义	怎么定
+user_bounds	每个因子的搜索上下界	默认用平台默认界。有参考 CSV（成交明细）时按实际触发值的 P10~P90 收窄，能省掉几百次死区回测
+step_grid	每个因子的搜索步长	默认按量程 1/20 取整。整数因子步长 1
+target	SIG 可行区间	sig_min 是硬下限；sig_max 建议放宽（如 1000），卡太死会误杀好解
+换公式 = 换这一个文件 + 重跑 discover_formula.py。源码一个字都不用改。
+
+Step 3 · 先跑自检，别直接开跑
+bash
+python selftest_v3.py
+它会用离线方式验证：配置加载、代理模型训练、区域敏感度地图、交互验证触发。
+自检不过就开跑 = 烧几小时预算买一个崩溃。
+
+Step 4 · 启动跑批
+bash
+BUDGET=1000 python pipe_v3.py > run.log 2>&1
+预算含义与阶段划分（用环境变量覆盖，不改源码）：
+
+环境变量	默认	说明
+BUDGET	1000	总回测次数（含月度验证消耗）
+P1_END	200	Phase1 广泛探索结束点
+P2_END	800	Phase2 优化结束点
+VERIFY_START	620	从该次数起开始做月度验证
+WMV3_DB	wm_v3.db	世界模型库文件名（多公式并存时改它）
+若从历史数据续跑（比如继承了 526 条观测再给 1000 次）：必须平移阶段阈值，
+BUDGET=1526 P1_END=726 P2_END=1326 VERIFY_START=1146，
+否则一启动就落在 Phase2，整个探索阶段被跳过。
+
+Windows 注意：不要用 nohup。孤儿进程会抢同一个回测配置通道造成串扰（表现为结果互相矛盾、日志出现重复行）。用终端/工具的后台托管。
+
+Step 5 · 开看板
+bash
+python monitor_v3.py 8900
+浏览器打开 http://127.0.0.1:8900，每 5 秒刷新。看板只读数据库，不干扰跑批。
+六块内容：概览卡片 / 当前最优 / Top15 候选池 / 参数区域敏感度地图 / 交互验证 / 失败记录 + 实验流。
+
+Step 6 · 长任务中途必须做阶段性分析
+跑批不是"启动然后等"。每积累 100~200 条就该停一次看：
+
+bash
+python analyze_progress.py     # 见 references/pitfalls.md 里的现成脚本
+重点看重复率（参数变了但结果完全一样的比例）。超过 30% 说明踩在参数平台区上，
+要调 PLATEAU_R / P_JUMP。这是唯一能显著挽回预算的指标。
+
+Step 7 · 出报告
+bash
+REPORT_OUT=报告名.xlsx python report_v3.py
+四个 sheet：结论与推荐 / Top20候选池 / 规律与失败记录 / 全部实验记录。
+
+核心设计（想改代码前先读这个）
+1. 参数值 与 参数空间结构 分离（V3 的根本改动）
+星核 back_test 只接受 [lo, hi] 区间，一次回测物理上必须交两个端点。
+旧做法把 lo 和 hi 当两个独立变量分别优化 —— 这是错的。
+
+正确拆法：
+
+value = (lo+hi)/2 → 唯一优化对象，每个参数 1 个
+width = hi-lo → 只作为搜索结构属性，不参与收益归因
+width=0 时 lo==hi，退化成纯单值参数
+配套必须改掉三处，否则 lo/hi 会偷偷复活：
+
+变异按参数单元操作（选中 fcid 后只做"移动 value"或"调 width"）
+交叉改成 value 插值 + width 整体继承，不能"lo 取 a、hi 取 b"
+模型输入从 [lo,hi]×N 换成 [value,width]×N
+表格口径：参数 | 区域 | R敏感度 | SIG敏感度 | 死亡风险 | 搜索权重
+不是 因子 | 边界(lo/hi) | R影响 | SIG影响。
+
+2. 区域敏感度：lo/hi 是搜索地图，不是优化变量
+"低值区域 / 高值区域"不是 lo 和 hi，而是 value 按观测分布中位数切成两半。
+
+R敏感度：该区域内 value 移动 1 个自身标准差，R 变化几个全局标准差
+搜索权重 = (基础探索项 + R敏感度) × SIG通过概率 × 不确定性
+死亡风险 > 0.5 → 降权，绝不删除，保留少量探索防误判
+3. 实验价值选点
+每轮生成 160 个候选，用随机森林代理模型打分，只跑价值最高的 1 个：
+
+Value = 预期R提升 + 未知区域价值 - 死区风险 - SIG违约风险 - 平台区惩罚 - 失败记忆
+回测一次 12~13 秒，模型打分 0.1 秒，所以宁可多生成候选精挑，不要盲跑。
+
+4. 排序口径：月度验证只罚不奖
+状态	处理
+明确不通过（连续两月负）	淘汰 / 重罚
+通过	不加分——只是"没被证伪"，不代表收益更高
+未验证	按 R 正常参与排名，不是缺点
+把"已验证"当加分项，会让已验证的低 R 解压过未验证的高 R，
+等于用流程状态篡改收益排序。
+
+坑（每条都是实际踩出来的）
+完整版见 references/pitfalls.md。这里列最要命的十条：
+
+改硬约束必须做三件事：改 json → 重算历史 score → 撤销旧约束写进 failures 的降权。
+漏了第二步，被旧约束误杀的好解会永远躺在 score=-1000 里进不了 Top 池。
+（实测：放宽 sig 上限后捞回一个 R=21.66% 的解，直接超过当时的最优 16.40%）
+
+配置只在进程启动时加载，改完 json 必须重启跑批。
+
+续跑必须平移阶段阈值，否则跳过探索阶段。
+
+40% 的回测可能是白跑的（参数平台区）。阈值型因子离散筛选，参数变了但选出的股票没变。
+必须做指纹检测 + 大跳跃变异。详见 references/pitfalls.md。
+
+敏感度别用 |斜率|×跨度/y标准差 —— 跨度被离群点撑大，十几个区域同时撞上限，地图没有分辨率。
+用标准化回归系数 beta = |slope| × sd_x / y_sd。
+
+权重纯乘积会在 R敏感度=0 时把整片未知区压成 0，分不出"没测出来"和"确实不敏感"。加基础探索项。
+
+不确定性要按中位数标定到 1.0，否则样本一多全部撞下限，14 个区域 10 个同分。
+还要加"取值覆盖度"因子，否则离散因子会永远卡在单一取值上。
+
+单次网络抖动能打死整个跑批。Expecting value: line 1 column 1 是云端返回空响应体。
+必须有 safe_run_bt 重试层 + 主循环 try/except 兜底。详见 references/pitfalls.md。
+
+apply_vals 的键归一化：groupParams 的 fcid 是 int，json.loads 后字典键变 str。
+不归一化则配置静默没写进去，所有配置返回同一结果，看起来像平台故障，其实是本地 bug。
+
+胜率字段平台返回已是百分数（44.1989 就是 44.20%），别再乘 100。
+年化收益率在高 sig 下按复利外推严重失真（sig≈3万时可达 1925%），只作定性参考，不参与排序。
+
+换公式必须换库。不同公式的 fcid 不同，参数完全不可迁移。
+换公式却复用旧库时，_check_db_matches_formula() 会在启动时报错拦截：
+
+世界模型库里的历史配置因子 [10, 62, ...] 与当前公式「XXX」的因子 [501, ...] 不一致
+看到这个提示 = 建新工作区或用 WMV3_DB=<新库名> 指定空库。
+（平台区样本载入另有静默跳过保护，不会 KeyError 刷屏。）
+
+Windows 上 Git Bash 的 /c/... 路径不能直接喂给 Windows Python。
+循环检查脚本语法时会得到 No such file or directory。用 C:/Users/... 真实路径。
+
+文件清单
+文件	作用
+pipe_common.py	MCP 客户端 + 公式配置注入。换机器只改顶部三行
+discover_formula.py	Step 2：经 MCP 发现公式，生成 formula_factors.json
+pipe_v3.py	跑批主程序（世界模型 + Agent）
+monitor_v3.py	实时看板（只读 DB）
+report_v3.py	4-sheet XLSX 报告
+selftest_v3.py	离线自检，开跑前必跑
+rescore_stability.py	改约束/改口径后重算历史 score
+backfill_fingerprints.py	中途加装平台区检测时回填历史指纹
+calibrate_plateau.py	标定平台区半径（换公式后建议重跑）
+assets/formula_factors.example_6661.json 是公式 6661 的实测样例，仅供结构参考——
+不要直接拿来跑别的公式，实际配置一律用 discover_formula.py 生成。
+
+已内置的自我保护
+保护	触发时
+safe_run_bt 重试层	云端返回空响应（网络抖动）
+主循环 try/except + 连续 3 次才抛	单次迭代的意外异常
+_check_db_matches_formula()	换公式却复用旧库
+平台区样本因子不匹配静默跳过	库里残留别的公式的指纹数据
+load_formula_config 找不到 json 直接报错	忘记跑 discover_formula.py
+参考文档：
+
+references/setup_new_machine.md — 换机分步详解
+references/pitfalls.md — 全部坑 + 现成分析脚本
+references/algorithm_v3.md — 算法原理与参数标定过程
+
+
+
