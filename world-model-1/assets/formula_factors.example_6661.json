@@ -1,0 +1,38 @@
+{
+  "fid": 7057,
+  "cid": 886,
+  "name": "6661",
+  "factors": [
+    {"fcid": 10,  "name": "分钟涨跌幅",                     "def_lo": -3,   "def_hi": 10,   "is_int": false},
+    {"fcid": 214, "name": "5分钟内出现起爆次数(涨幅≤4.5)",  "def_lo": 1,    "def_hi": 5,    "is_int": true},
+    {"fcid": 419, "name": "单峰密集指标-红柱",               "def_lo": 0,    "def_hi": 10,   "is_int": true},
+    {"fcid": 344, "name": "主买净额占流通市值比例",          "def_lo": 0,    "def_hi": 1.0,  "is_int": false},
+    {"fcid": 62,  "name": "大单",                           "def_lo": 0,    "def_hi": 3500, "is_int": false},
+    {"fcid": 490, "name": "换手率明细-红柱值",               "def_lo": 0,    "def_hi": 10,   "is_int": true},
+    {"fcid": 844, "name": "<<柱形量比>>-剧烈放量",          "def_lo": 0,    "def_hi": 1,    "is_int": true}
+  ],
+  "user_bounds": {
+    "10":  [-3, 8],
+    "214": [1, 5],
+    "419": [0, 7],
+    "344": [0, 0.8],
+    "62":  [0, 2500],
+    "490": [0, 3],
+    "844": [0, 1]
+  },
+  "step_grid": {
+    "10":  0.5,
+    "214": 1,
+    "419": 1,
+    "344": 0.05,
+    "62":  50,
+    "490": 1,
+    "844": 1
+  },
+  "target": {
+    "sig_min": 150,
+    "sig_max": 1000,
+    "pr_floor": 0.0,
+    "objective": "maximize_pr"
+  }
+}
